@@ -1,0 +1,130 @@
+---
+- name: Setup 3-tier architecture on AWS
+  hosts: localhost
+  gather_facts: no
+  tasks:
+
+    - name: Create VPC
+      amazon.aws.ec2_vpc_net:
+        name: "vpc_name"           # This is used in combination with cidr_block to determine if a VPC already exists.
+        cidr_block: "10.0.0.0/16"  # The primary CIDR of the VPC. CIDR = Classless Inter-Domain Routing
+        region: "{{ region }}"
+        multi_ok: true             # The module will create another VPC if there is another VPC with the same name and CIDR block.
+      register: vpc
+      debug:
+        msg: "VPC {{ vpc.name }} has been created."
+
+    - name: Create public subnet
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ vpc.vpc_id }}"
+        cidr_block: "10.0.1.0/24"
+        map_public: true
+        region: "{{ region }}"
+      register: public_subnet
+      debug:
+        msg: "VPC public subnet {{ public_subnet.cidr_block }} has been created."
+
+    - name: Create private subnet
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ vpc.vpc_id }}"
+        cidr_block: "10.0.2.0/24"
+        map_public: false
+        region: "{{ region }}"
+      register: private_subnet
+      debug:
+        msg: "VPC private subnet {{ private_subnet.cidr_block }} has been created."
+
+    - name: Create web security group
+      amazon.aws.ec2_security_group:
+        name: "web_sg_name"
+        description: "Web Security Group description"
+        vpc_id: "{{ vpc.vpc_id }}"
+        region: "{{ region }}"
+        rules:
+            rule_desc: Web security group rule description
+            proto: tcp
+            ports:       # A list of ports that traffic is going to.
+              - 80       # http port, 443 - https
+            cidr_ip:     # The IPv4 CIDR range traffic is coming from.
+              - "0.0.0.0/0"
+      register: web_sg
+      debug:
+        msg: "Web security group {{ web_sg.name }} has been created."
+
+    - name: Create app security group
+      amazon.aws.ec2_security_group:
+        name: "app_sg_name"
+        description: "App Security Group description"
+        vpc_id: "{{ vpc.vpc_id }}"
+        region: "{{ region }}"
+        rules:
+            rule_desc: App security group rule description
+            proto: tcp
+            ports:
+              - 8080             # App port
+            cidr_ips:
+              - "10.0.2.0/24"    # Private subnet 
+      register: app_sg
+      debug:
+        msg: "App security group {{ app_sg.name }} has been created."
+
+    - name: Create Database security group
+      amazon.aws.ec2_security_group:
+        name: "db_sg_name"
+        description: "Database Security Group description"
+        vpc_id: "{{ vpc.vpc_id }}"
+        region: "{{ region }}"
+        rules:
+            rule_desc: DB security group rule description
+            proto: tcp
+            ports:
+              - 3306              # DB port
+            cidr_ips:
+              - "10.0.2.0/24"     # Private subnet 
+      register: db_sg
+      debug:
+        msg: "DB security group {{ app_sg.name }} has been created."
+
+    - name: Launch EC2 web server
+      amazon.aws.ec2_instance:
+        name: "web-server instance name"
+        image_id: "ami-***"       # Amazon Machine Image. Mandatory. Select proper image for what you desire
+        instance_type: t2.micro
+        security_group: "{{ web_sg.group_id }}"
+        subnet_id: "{{ public_subnet.id }}"
+        region: "{{ region }}"
+        count: 1                  # Number of instances to launch. Setting this value will result in always launching new instances
+      register: web_instance
+      debug:
+        msg: "Web serrver {{ web_instance.name }} has been created."
+
+    - name: Launch EC2 app server
+      amazon.aws.ec2_instance:
+        name: "app-server instance name"
+        image_id: "ami-***"        
+        instance_type: t2.micro
+        security_group: "{{ app_sg.group_id }}"
+        subnet_id: "{{ private_subnet.id }}"
+        region: "{{ region }}"
+        count: 1
+      debug:
+        msg: "App server {{ app_sg.name }} has been created."
+
+    - name: Launch RDS MySQL instance
+      amazon.aws.rds_instance:
+        db_instance_identifier: "mysqldb-instance"
+        db_name: "mysql_db"
+        master_username: "db_admin"
+        master_user_password: "db_password"
+        db_instance_class: db.t3.micro
+        source_engine: "mysql"
+        allocated_storage: 50
+        db_security_groups: "{{ db_sg.group_id }}"
+        publicly_accessible: false
+        region: "{{ region }}"
+      debug:
+        msg: "MySQL instance has been created."
+
+    - name: Show web server IP
+      debug:
+        msg: "Web server IP: {{ web_instance.instances[0].public_ip }}"
